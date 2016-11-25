@@ -19,7 +19,7 @@
 @interface UIPopoverPresentationController () {
 @public
     BOOL _managesPresentation;
-    dispatch_block_t _willDismissCompletion;
+    dispatch_block_t _didDismissCompletion;
 }
 
 - (void)_prepareForPresentation;

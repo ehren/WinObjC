@@ -49,26 +49,22 @@
 }
 
 - (BOOL)popoverControllerShouldDismissPopover:(UIPopoverController*)popoverController {
-    BOOL shouldDismiss = YES;
-
     if ([_delegate respondsToSelector:@selector(popoverPresentationControllerShouldDismissPopover:)]) {
-        shouldDismiss = [_delegate popoverPresentationControllerShouldDismissPopover:_controller];
+        return [_delegate popoverPresentationControllerShouldDismissPopover:_controller];
     }
 
-    if (shouldDismiss) {
-        if (_controller->_willDismissCompletion) {
-            _controller->_willDismissCompletion();
-            [_controller->_willDismissCompletion release];
-            _controller->_willDismissCompletion = nil;
-        }
-    }
-
-    return shouldDismiss;
+    return YES;
 }
 
 - (void)popoverControllerDidDismissPopover:(UIPopoverController*)popoverController {
     if ([_delegate respondsToSelector:@selector(popoverPresentationControllerDidDismissPopover:)]) {
         [_delegate popoverPresentationControllerDidDismissPopover:_controller];
+    }
+
+    if (_controller->_didDismissCompletion) {
+        _controller->_didDismissCompletion();
+        [_controller->_didDismissCompletion release];
+        _controller->_didDismissCompletion = nil;
     }
 }
 
@@ -91,8 +87,8 @@
     self = [super initWithPresentedViewController:presentedViewController presentingViewController:presentingViewController];
     if (self) {
         _permittedArrowDirections = UIPopoverArrowDirectionAny;
-        _popoverControllerInternal = [[UIPopoverController alloc] initWithContentViewController:presentedViewController];
-        _delegateInternal = [[_UIPopoverControllerDelegateInternal alloc] initWithController:self delegate:nil];
+        _popoverControllerInternal.attach([[UIPopoverController alloc] initWithContentViewController:presentedViewController]);
+        _delegateInternal.attach([[_UIPopoverControllerDelegateInternal alloc] initWithController:self delegate:nil]);
         [_popoverControllerInternal setDelegate:_delegateInternal];
     }
     return self;
@@ -316,7 +312,7 @@
 }
 
 - (void)dealloc {
-    [_willDismissCompletion release];
+    [_didDismissCompletion release];
     [super dealloc];
 }
 

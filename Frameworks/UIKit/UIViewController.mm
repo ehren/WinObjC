@@ -654,42 +654,44 @@ NSMutableDictionary* _pageMappings;
  @Notes May not be fully implemented
 */
 - (instancetype)initWithCoder:(NSCoder*)coder {
-    UIView* view = [coder decodeObjectForKey:@"UIView"];
-    [self setView:view];
+    if (self = [super init]) {
+        UIView* view = [coder decodeObjectForKey:@"UIView"];
+        [self setView:view];
 
-    priv->navigationItem = [coder decodeObjectForKey:@"UINavigationItem"];
-    if (priv->navigationItem != nil) {
-        TraceVerbose(TAG, L"UIVIewController navigationItem is %hs", object_getClassName(priv->navigationItem));
+        priv->navigationItem = [coder decodeObjectForKey:@"UINavigationItem"];
+        if (priv->navigationItem != nil) {
+            TraceVerbose(TAG, L"UIVIewController navigationItem is %hs", object_getClassName(priv->navigationItem));
+        }
+
+        priv->nibName = [coder decodeObjectForKey:@"UINibName"];
+
+        //  Attempt to locate resources from the same bundle as the unarchiver that's loading us
+        if ([coder respondsToSelector:@selector(_bundle)]) {
+            priv->nibBundle = [coder _bundle];
+        }
+
+        priv->tabBarItem = [coder decodeObjectForKey:@"UITabBarItem"];
+        priv->toolbarItems = [coder decodeObjectForKey:@"UIToolbarItems"];
+
+        if ([coder containsValueForKey:@"UIAutoresizesArchivedViewToFullSize"]) {
+            priv->_autoresize = [coder decodeIntForKey:@"UIAutoresizesArchivedViewToFullSize"] != FALSE;
+        } else {
+            priv->_autoresize = true;
+        }
+
+        if ([coder containsValueForKey:@"UIWantsFullScreenLayout"]) {
+            priv->_wantsFullScreenLayout = [coder decodeIntForKey:@"UIWantsFullScreenLayout"] != FALSE;
+        };
+
+        priv->_modalTemplates = [coder decodeObjectForKey:@"UIStoryboardSegueTemplates"];
+        NSDictionary* objs = [coder decodeObjectForKey:@"UIExternalObjectsTableForViewLoading"];
+        if (objs != nil) {
+            priv->_externalObjects = objs;
+        }
+
+        priv->_childViewControllers = [coder decodeObjectForKey:@"UIChildViewControllers"];
+        priv->_edgesForExtendedLayout = [coder decodeIntForKey:@"UIKeyEdgesForExtendedLayout"];
     }
-
-    priv->nibName = [coder decodeObjectForKey:@"UINibName"];
-
-    //  Attempt to locate resources from the same bundle as the unarchiver that's loading us
-    if ([coder respondsToSelector:@selector(_bundle)]) {
-        priv->nibBundle = [coder _bundle];
-    }
-
-    priv->tabBarItem = [coder decodeObjectForKey:@"UITabBarItem"];
-    priv->toolbarItems = [coder decodeObjectForKey:@"UIToolbarItems"];
-
-    if ([coder containsValueForKey:@"UIAutoresizesArchivedViewToFullSize"]) {
-        priv->_autoresize = [coder decodeIntForKey:@"UIAutoresizesArchivedViewToFullSize"] != FALSE;
-    } else {
-        priv->_autoresize = true;
-    }
-
-    if ([coder containsValueForKey:@"UIWantsFullScreenLayout"]) {
-        priv->_wantsFullScreenLayout = [coder decodeIntForKey:@"UIWantsFullScreenLayout"] != FALSE;
-    };
-
-    priv->_modalTemplates = [coder decodeObjectForKey:@"UIStoryboardSegueTemplates"];
-    NSDictionary* objs = [coder decodeObjectForKey:@"UIExternalObjectsTableForViewLoading"];
-    if (objs != nil) {
-        priv->_externalObjects = objs;
-    }
-
-    priv->_childViewControllers = [coder decodeObjectForKey:@"UIChildViewControllers"];
-    priv->_edgesForExtendedLayout = [coder decodeIntForKey:@"UIKeyEdgesForExtendedLayout"];
 
     return self;
 }
@@ -1158,9 +1160,7 @@ NSMutableDictionary* _pageMappings;
         controller->priv->_presentCompletionBlock = [[completion copy] autorelease];
 
         if ([controller modalPresentationStyle] == UIModalPresentationPopover) {
-            [controller->priv->_popoverPresentationController release];
-            controller->priv->_popoverPresentationController =
-                [[UIPopoverPresentationController alloc] initWithPresentedViewController:controller presentingViewController:self];
+            controller->priv->_popoverPresentationController.attach([[UIPopoverPresentationController alloc] initWithPresentedViewController:controller presentingViewController:self]);
         }
 
         [controller performSelectorOnMainThread:@selector(_addToTop:) withObject:[NSNumber numberWithInt:animated] waitUntilDone:NO];
@@ -1336,28 +1336,25 @@ NSMutableDictionary* _pageMappings;
 
     if ([self parentViewController] != nil) {
         if ([self modalPresentationStyle] == UIModalPresentationPopover) {
-            if (priv->_presentationController != nil) {
-                [priv->_presentationController release];
-            }
-
             priv->_presentationController = priv->_popoverPresentationController;
-
             [priv->_popoverPresentationController _prepareForPresentation];
 
             displayPopover = ![self _hidesParent];
 
             if (displayPopover) {
-                priv->_popoverPresentationController->_managesPresentation = TRUE;
+                priv->_popoverPresentationController->_managesPresentation = YES;
 
                 __unsafe_unretained __block UIViewController* me = self;
 
                 dispatch_block_t cleanup = ^{
                     me->priv->_parentViewController->priv->_presentedViewController = nil;
                     me->priv->_parentViewController->priv->_modalViewController = nil;
+                    me->priv->_presentationController = nil;
+                    me->priv->_popoverPresentationController = nil;
                 };
 
-                [priv->_popoverPresentationController->_willDismissCompletion release];
-                priv->_popoverPresentationController->_willDismissCompletion = [cleanup copy];
+                [priv->_popoverPresentationController->_didDismissCompletion release];
+                priv->_popoverPresentationController->_didDismissCompletion = [cleanup copy];
                 [priv->_popoverPresentationController _presentAnimated:animated completion:priv->_presentCompletionBlock];
                 priv->_presentCompletionBlock = nil;
             }
@@ -1617,6 +1614,15 @@ static UIInterfaceOrientation findOrientation(UIViewController* self) {
     }
 }
 
+- (void)_doNotifyViewDidDisappear:(BOOL)isAnimated {
+    priv->_visibility = controllerNotVisible;
+    if (![self _popoverManagesPresentation]) {
+        [self viewDidDisappear:isAnimated];
+        priv->_popoverPresentationController = nil;
+        priv->_presentationController = nil;
+    }
+}
+
 - (void)_notifyViewDidDisappear:(BOOL)isAnimated {
     switch (priv->_visibility) {
         case controllerNotVisible:
@@ -1624,10 +1630,7 @@ static UIInterfaceOrientation findOrientation(UIViewController* self) {
 
         case controllerWillDisappear:
             if (isAnimated == FALSE) {
-                priv->_visibility = controllerNotVisible;
-                if (![self _popoverManagesPresentation]) {
-                    [self viewDidDisappear:isAnimated];
-                }
+                [self _doNotifyViewDidDisappear:isAnimated];
             } else {
                 // assert(0);
             }
@@ -1635,19 +1638,13 @@ static UIInterfaceOrientation findOrientation(UIViewController* self) {
 
         case controllerWillDisappearAnimated:
             if (isAnimated) {
-                priv->_visibility = controllerNotVisible;
-                if (![self _popoverManagesPresentation]) {
-                    [self viewDidDisappear:isAnimated];
-                }
+                [self _doNotifyViewDidDisappear:isAnimated];
             }
             break;
 
         case controllerVisible:
             TraceWarning(TAG, L"Warning: Didn't notify view will disappear");
-            priv->_visibility = controllerNotVisible;
-            if (![self _popoverManagesPresentation]) {
-                [self viewDidDisappear:isAnimated];
-            }
+            [self _doNotifyViewDidDisappear:isAnimated];
             break;
 
         case controllerWillAppearAnimated:
@@ -2245,7 +2242,6 @@ static UIInterfaceOrientation findOrientation(UIViewController* self) {
 
     priv->_childViewControllers = nil;
     priv->_searchDisplayController = nil;
-    priv->_storyboard = nil;
     priv->_modalTemplates = nil;
     priv->_dismissController = nil;
     IwFree(priv);
