@@ -101,6 +101,8 @@ void SetTextControlContentVerticalAlignment(WXCControl* control, WXVerticalAlign
     // dummy control to steal the focus
     StrongId<WXCButton> _dummyButton;
     StrongId<_UIHiddenButtonView> _hiddenView;
+
+    StrongId<UIView> _disabledView;
 }
 
 //
@@ -899,8 +901,24 @@ void SetTextControlContentVerticalAlignment(WXCControl* control, WXVerticalAlign
 - (void)setEnabled:(BOOL)enabled {
     if (self.secureTextEntry) {
         self->_passwordBox.isEnabled = enabled;
+        return;
+    }
+
+    if (enabled == [self isEnabled]) {
+        return;
+    }
+
+    self->_textBox.isReadOnly = !enabled;
+    self->_textBox.isTabStop = enabled;
+    self.userInteractionEnabled = enabled;
+
+    if (enabled) {
+        [_disabledView removeFromSuperview];
+        _disabledView = nil;
     } else {
-        self->_textBox.isEnabled = enabled;
+        _disabledView = [[UIView alloc] initWithFrame:self.bounds];
+        _disabledView.backgroundColor = [UIColor clearColor];
+        [self addSubview:_disabledView];
     }
 }
 
@@ -911,7 +929,7 @@ void SetTextControlContentVerticalAlignment(WXCControl* control, WXVerticalAlign
     if (self.secureTextEntry) {
         return self->_passwordBox.isEnabled;
     } else {
-        return self->_textBox.isEnabled;
+        return !self->_textBox.isReadOnly;
     }
 }
 
@@ -924,6 +942,10 @@ void SetTextControlContentVerticalAlignment(WXCControl* control, WXVerticalAlign
 - (BOOL)becomeFirstResponder {
     if (_isFirstResponder) {
         return YES;
+    }
+
+    if (![self isEnabled]) {
+        return [_disabledView becomeFirstResponder];
     }
 
     // Try to become first responder by setting focus
@@ -1061,6 +1083,12 @@ void SetTextControlContentVerticalAlignment(WXCControl* control, WXVerticalAlign
     [control addGotFocusEvent:^void(RTObject* sender, WXRoutedEventArgs* e) {
         __strong UITextField* strongSelf = weakSelf;
         if (strongSelf) {
+            if (!strongSelf.secureTextEntry && ![strongSelf isEnabled]) {
+                [strongSelf _killFocus];
+                [strongSelf becomeFirstResponder];
+                return;
+            }
+
             // when GotFocus, check delegate (if exits) to see if it allows start editing
             if ([strongSelf.delegate respondsToSelector:@selector(textFieldShouldBeginEditing:)] &&
                 ![strongSelf.delegate textFieldShouldBeginEditing:strongSelf]) {
