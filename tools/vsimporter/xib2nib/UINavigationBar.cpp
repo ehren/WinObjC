@@ -36,6 +36,7 @@ void UINavigationBar::InitFromStory(XIBObject *obj)
 {
     UIView::InitFromStory(obj);
 
+    _items = (XIBArray *) obj->FindMemberAndHandle("items");
     _outputClassName = "UINavigationBar";
 }
 

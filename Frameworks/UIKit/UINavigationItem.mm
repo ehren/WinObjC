@@ -35,34 +35,52 @@
  @Status Interoperable
 */
 - (UINavigationItem*)initWithTitle:(NSString*)title {
-    _title.attach([title copy]);
+    if (self = [super init]) {
+        _title.attach([title copy]);
 
-    _leftBarButtonItems = [NSMutableArray array];
-    _rightBarButtonItems = [NSMutableArray array];
+        if (![_leftBarButtonItems count]) {
+            _leftBarButtonItems.attach([[NSMutableArray alloc] init]);
+        }
+
+        if (![_rightBarButtonItems count]) {
+            _rightBarButtonItems.attach([[NSMutableArray alloc] init]);
+        }
+    }
 
     return self;
 }
 
 - (NSObject*)initWithCoder:(NSCoder*)coder {
-    id name = [coder decodeObjectForKey:@"UITitle"];
-    id titleView = [coder decodeObjectForKey:@"UITitleView"];
+    if (self = [super init]) {
+        NSString* name = [coder decodeObjectForKey:@"UITitle"];
+        UIView* titleView = [coder decodeObjectForKey:@"UITitleView"];
 
-    _leftBarButtonItem = [coder decodeObjectForKey:@"UILeftBarButtonItem"];
-    _rightBarButtonItem = [coder decodeObjectForKey:@"UIRightBarButtonItem"];
+        _leftBarButtonItem = [coder decodeObjectForKey:@"UILeftBarButtonItem"];
+        _rightBarButtonItem = [coder decodeObjectForKey:@"UIRightBarButtonItem"];
+        _leftBarButtonItems = [coder decodeObjectForKey:@"UILeftBarButtonItems"];
+        _rightBarButtonItems = [coder decodeObjectForKey:@"UIRightBarButtonItems"];
 
-    _leftBarButtonItems = [NSMutableArray array];
-    if (_leftBarButtonItem != nil) {
-        [_leftBarButtonItems addObject:(id)_leftBarButtonItem];
-    }
-    _rightBarButtonItems = [NSMutableArray array];
-    if (_rightBarButtonItem != nil) {
-        [_rightBarButtonItems addObject:(id)_rightBarButtonItem];
-    }
+        if (!_leftBarButtonItems) {
+            _leftBarButtonItems.attach([[NSMutableArray alloc] init]);
+        }
 
-    [self initWithTitle:name];
+        if (!_rightBarButtonItems) {
+            _rightBarButtonItems.attach([[NSMutableArray alloc] init]);
+        }
 
-    if (titleView != nil) {
-        [self setTitleView:titleView];
+        if (_leftBarButtonItem) {
+            [_leftBarButtonItems addObject:_leftBarButtonItem];
+        }
+
+        if (_rightBarButtonItem) {
+            [_rightBarButtonItems addObject:_rightBarButtonItem];
+        }
+
+        self = [self initWithTitle:name];
+
+        if (titleView != nil) {
+            [self setTitleView:titleView];
+        }
     }
 
     return self;
