@@ -18,6 +18,7 @@
 #import "PopoverViewController.h"
 
 static const int MODALFORMSHEET_ROW = 4;
+static const int MULTIPLEPRESENTDISMISS_ROW = 5;
 
 @interface ControlsViewController ()
 
@@ -65,15 +66,6 @@ static const int MODALFORMSHEET_ROW = 4;
     [self.rightPopoverButton setFrame:CGRectMake(self.view.bounds.size.width - originOffset - buttonWidth, originOffset, buttonWidth, buttonHeight)];
     [self.rightPopoverButton addTarget:self action:@selector(pressedPopoverButton:) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:self.rightPopoverButton];
-
-    UILabel* popoverDisclaimerLabel = [[UILabel alloc] initWithFrame:
-        CGRectMake(self.leftPopoverButton.frame.origin.x + self.leftPopoverButton.frame.size.width + originOffset,
-                   self.leftPopoverButton.frame.origin.y,
-                   self.rightPopoverButton.frame.origin.x - self.leftPopoverButton.frame.origin.x - self.leftPopoverButton.frame.size.width - originOffset * 2,
-                   self.leftPopoverButton.frame.size.height)];
-    popoverDisclaimerLabel.text = @"Tablet-style popovers require WOCOperationModeTablet to be enabled (see DisplayModeViewController).";
-    popoverDisclaimerLabel.textAlignment = NSTextAlignmentCenter;
-    [self.view addSubview:popoverDisclaimerLabel];
 }
 
 - (void)viewDidDisappear:(BOOL)animated {
@@ -85,7 +77,7 @@ static const int MODALFORMSHEET_ROW = 4;
 }
 
 - (NSInteger)tableView:(UITableView*)tableView numberOfRowsInSection:(NSInteger)section {
-    return 6;
+    return 7;
 }
 
 - (CGFloat)tableView:(UITableView*)tableView heightForRowAtIndexPath:(NSIndexPath*)indexPath {
@@ -96,6 +88,7 @@ static const int MODALFORMSHEET_ROW = 4;
     UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:@"MenuCell"];
     if (nil == cell) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"MenuCell"];
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
     }
 
     if (indexPath.row == 0) {
@@ -110,7 +103,6 @@ static const int MODALFORMSHEET_ROW = 4;
 
         cell.accessoryView = switchCtrl;
         cell.textLabel.text = @"UISwitch";
-        cell.selectionStyle = UITableViewCellSelectionStyleNone;
     } else if (indexPath.row == 1) {
         // slider
         CGRect frame = CGRectMake(5.0, 12.0, 120.0, 38.0);
@@ -129,7 +121,6 @@ static const int MODALFORMSHEET_ROW = 4;
 
         cell.accessoryView = sliderCtl;
         cell.textLabel.text = @"UISlider";
-        cell.selectionStyle = UITableViewCellSelectionStyleNone;
     } else if (indexPath.row == 2) {
         // activity indicator
         _progressInd = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleWhiteLarge];
@@ -139,7 +130,6 @@ static const int MODALFORMSHEET_ROW = 4;
 
         cell.accessoryView = _progressInd;
         cell.textLabel.text = @"UIActivityIndicator";
-        cell.selectionStyle = UITableViewCellSelectionStyleNone;
     } else if (indexPath.row == 3) {
         // progress view
 
@@ -150,8 +140,6 @@ static const int MODALFORMSHEET_ROW = 4;
 
         cell.accessoryView = progressBar;
         cell.textLabel.text = @"UIProgressView";
-        cell.selectionStyle = UITableViewCellSelectionStyleNone;
-
     } else if (indexPath.row == MODALFORMSHEET_ROW) {
         // form sheet modal
 
@@ -162,20 +150,22 @@ static const int MODALFORMSHEET_ROW = 4;
 
         subtitleCell.textLabel.text = @"UIModalPresentationFormSheet (press to launch)";
         subtitleCell.detailTextLabel.text = @"Toggle switch to resize (tablet only)";
-        subtitleCell.selectionStyle = UITableViewCellSelectionStyleBlue;
+        subtitleCell.selectionStyle = UITableViewCellSelectionStyleNone;
         UISwitch* resizeSwitch = [[UISwitch alloc] init];
         resizeSwitch.on = self.resizeModal;
         [resizeSwitch addTarget:self action:@selector(toggleResizeModal) forControlEvents:UIControlEventValueChanged];
         subtitleCell.accessoryView = resizeSwitch;
 
         return subtitleCell;
+    } else if (indexPath.row == MULTIPLEPRESENTDISMISS_ROW) {
+        cell.textLabel.text = @"View Controller Multiple Children Present/Dismiss";
     }
 
     return cell;
 }
 
 - (NSIndexPath*)tableView:(UITableView*)tableView willSelectRowAtIndexPath:(NSIndexPath*)indexPath {
-    if (indexPath.row == MODALFORMSHEET_ROW) {
+    if (indexPath.row == MODALFORMSHEET_ROW || indexPath.row == MULTIPLEPRESENTDISMISS_ROW) {
         return indexPath;
     }
 
@@ -196,6 +186,23 @@ static const int MODALFORMSHEET_ROW = 4;
                          completion:^{
                              assert(!([[UIDevice currentDevice] userInterfaceIdiom] == UIUserInterfaceIdiomPad && self.view.hidden));
                          }];
+    } else if (indexPath.row == MULTIPLEPRESENTDISMISS_ROW) {
+        UIViewController* viewController = [[PopoverViewController alloc] initWithImage:[UIImage imageNamed:@"photo1.jpg"]];
+        viewController.modalPresentationStyle = UIModalPresentationFormSheet;
+
+        [self presentViewController:viewController animated:YES completion:^{
+            UIViewController* another = [[PopoverViewController alloc] initWithImage:[UIImage imageNamed:@"photo1.jpg"]];
+            another.modalPresentationStyle = UIModalPresentationFormSheet;
+            [viewController presentViewController:another animated:YES completion:^{
+                UIViewController* yetAnother = [[PopoverViewController alloc] initWithImage:[UIImage imageNamed:@"photo1.jpg"]];
+                yetAnother.modalPresentationStyle = UIModalPresentationFormSheet;
+                [another presentViewController:yetAnother animated:YES completion:^{
+                    // This should dismiss all children (only topmost should be dismissed with animation).
+                    [self dismissViewControllerAnimated:YES completion:^{
+                    }];
+                }];
+            }];
+        }];
     }
 }
 

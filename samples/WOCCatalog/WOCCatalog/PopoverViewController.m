@@ -159,4 +159,7 @@
     self.numViewEventsFired += 1;
 }
 
+- (void)dealloc {
+}
+
 @end

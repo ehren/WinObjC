@@ -471,14 +471,20 @@ NSMutableDictionary* _pageMappings;
 
 - (BOOL)_hidesParent {
     UIModalPresentationStyle style = [self modalPresentationStyle];
-    if ((style == UIModalPresentationFormSheet || style == UIModalPresentationPopover) && GetCACompositor()->isTablet()) {
+
+    if (style == UIModalPresentationPopover) {
+        // Genuine popovers (which don't hide their parent) are always shown regardless of tablet mode.
+        return NO;
+    } else if (style == UIModalPresentationFormSheet && GetCACompositor()->isTablet()) {
+        // FormSheet modals that don't hide their parent are only presented with tablet mode enabled.
         return NO;
     }
+
     return YES;
 }
 
 - (void)_setResizeToScreen:(BOOL)resize {
-    priv->_resizeToScreen = TRUE;
+    priv->_resizeToScreen = YES;
 }
 
 - (void)setOrientationInternal:(UIInterfaceOrientation)orientation animated:(BOOL)animated {
@@ -982,7 +988,7 @@ NSMutableDictionary* _pageMappings;
  @Status Interoperable
 */
 - (UIViewController*)modalViewController {
-    return priv->_modalViewController;
+    return priv->_presentedViewController;
 }
 
 /**
@@ -1119,22 +1125,17 @@ NSMutableDictionary* _pageMappings;
  @Status Interoperable
 */
 - (void)presentViewController:(UIViewController*)controller animated:(BOOL)animated completion:(void (^)(void))completion {
-    bool shouldShow = false;
-    UIViewController* curController = self;
-    while (curController != nil) {
-        if (curController->priv->_visibility != controllerNotVisible) {
-            shouldShow = true;
-        }
-        curController = [curController parentViewController];
-    }
-    if (!shouldShow) {
-        TraceWarning(TAG, L"Controller is not visible!");
+    if (!controller) {
+        TraceWarning(TAG, L"presentViewController with nil controller");
         return;
     }
 
-    UIViewController* oldViewController = self;
-    if (priv->_modalViewController != nil) {
-        oldViewController = priv->_modalViewController;
+    if (self->priv->_visibility == controllerNotVisible) {
+        TraceWarning(TAG, L"presentingViewController not visible");
+        return;
+    }
+
+    if (priv->_presentedViewController) {
         TraceWarning(TAG,
                      L"Can't present view controller %08x (%hs) - view controller %08x (%hs) already has a presented controller!",
                      controller,
@@ -1144,26 +1145,43 @@ NSMutableDictionary* _pageMappings;
         return;
     }
 
-    if (controller != nil) {
-        [[UIApplication sharedApplication] beginIgnoringInteractionEvents];
-    }
+    [[UIApplication sharedApplication] beginIgnoringInteractionEvents];
 
     if ([controller _hidesParent]) {
         [self _notifyViewWillDisappear:animated];
     }
 
-    priv->_modalViewController = controller;
     priv->_presentedViewController = controller;
-    if (controller != nil) {
-        [controller view];
-        controller->priv->_parentViewController = self;
-        controller->priv->_presentingViewController = self;
+    [controller view];
+    controller->priv->_parentViewController = self;
+    controller->priv->_presentingViewController = self;
+
+    if ([controller modalPresentationStyle] == UIModalPresentationPopover) {
+        controller->priv->_popoverPresentationController.attach([[UIPopoverPresentationController alloc] initWithPresentedViewController:controller presentingViewController:self]);
+
+        dispatch_block_t popoverPresent = ^{
+            [[UIApplication sharedApplication] endIgnoringInteractionEvents];
+
+            if (completion) {
+                completion();
+            }
+        };
+
+        __unsafe_unretained __block UIViewController* weakSelf = self;
+
+        dispatch_block_t popoverDismiss = ^{
+            StrongId<UIViewController> strongSelf = weakSelf;
+            [strongSelf _childDismissCleanup];
+        };
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            // We dispatch the presentation asynchronously so users have the opportunity to configure the 
+            // popoverPresentationController after presentViewController but before the actual popover is presented.
+
+            [controller->priv->_popoverPresentationController _presentAnimated:animated presentCompletion:popoverPresent dismissCompletion:popoverDismiss];
+        });
+    } else {
         controller->priv->_presentCompletionBlock.attach([completion copy]);
-
-        if ([controller modalPresentationStyle] == UIModalPresentationPopover) {
-            controller->priv->_popoverPresentationController.attach([[UIPopoverPresentationController alloc] initWithPresentedViewController:controller presentingViewController:self]);
-        }
-
         [controller performSelectorOnMainThread:@selector(_addToTop:) withObject:[NSNumber numberWithInt:animated] waitUntilDone:NO];
     }
 }
@@ -1204,12 +1222,32 @@ NSMutableDictionary* _pageMappings;
     [[UIApplication sharedApplication] endIgnoringInteractionEvents];
 }
 
+static void depthFirstNoAnimationDismiss(UIViewController *controller) {
+    UIViewController* child = [controller presentedViewController];
+
+    if (child) {
+        depthFirstNoAnimationDismiss(child);
+    }
+
+    // This relies on dismissViewControllerAnimated:NO blocking until full child dismissal.
+    [[controller parentViewController] dismissViewControllerAnimated:NO completion:nil];
+}
+
+- (void)_childDismissCleanup {
+    priv->_presentedViewController->priv->_parentViewController = nil;
+    priv->_presentedViewController->priv->_presentingViewController = nil;
+    priv->_presentedViewController->priv->_popoverPresentationController = nil;
+    priv->_presentedViewController = nil;
+}
+
 /**
  @Status Interoperable
 */
 - (void)dismissViewControllerAnimated:(BOOL)animated completion:(void (^)(void))completion {
-    if (priv->_modalViewController == nil) {
-        if ([self parentViewController] != nil) {
+    if (![self presentedViewController]) {
+        // Calling dismiss on a presentedViewController (that hasn't presented additional view controllers itself) should result in the parent handling the dismissal.
+
+        if ([self parentViewController]) {
             [[self parentViewController] dismissViewControllerAnimated:animated completion:completion];
             return;
         }
@@ -1218,39 +1256,49 @@ NSMutableDictionary* _pageMappings;
         return;
     }
 
-    UIViewController* curController = priv->_modalViewController;
+    UIViewController* presented = [self presentedViewController];
+    UIViewController* grandChild = [presented presentedViewController];
 
-    [curController retain];
-    [curController autorelease];
+    while ([grandChild presentedViewController]) {
+        grandChild = [grandChild presentedViewController];
+    }
 
-    BOOL realPopoverPresented = [[curController popoverPresentationController] _isManagingPresentation];
+    if (grandChild) {
+        // Dismiss the youngest first with specified animation
+        [[grandChild parentViewController] dismissViewControllerAnimated:animated completion:^{
+            // Dismiss the remaining in youngest first order with no animation
+            depthFirstNoAnimationDismiss(presented);
+            // call the completion
+            completion();
+        }];
+        return;
+    }
 
-    if (!realPopoverPresented && curController->priv->_modalViewController) {
-        [curController dismissViewControllerAnimated:animated completion:completion];
+    dispatch_block_t cleanupCompletion = ^{
+        [self _childDismissCleanup];
+
+        // Completion must happen after full tear-down, otherwise attempts to present a new 
+        // view controller from the parent of the just dismissed controller, in this completion,
+        // will fail on the stale presentingViewController/presentedViewController relationship.
+        if (completion) {
+            completion();
+        }
+    };
+
+    UIPopoverPresentationController* popover = [presented popoverPresentationController];
+    if (popover) {
+        [popover _dismissAnimated:animated completion:cleanupCompletion];
+        return;
     }
 
     [self _notifyViewWillAppear:animated];
 
-    priv->_modalViewController = nil;
-    priv->_presentedViewController = nil;
-
-    if (curController->priv->_parentViewController) {
-        curController->priv->_parentViewController->priv->_presentedViewController = nil;
-        curController->priv->_parentViewController->priv->_modalViewController = nil;
-    }
-
-    curController->priv->_parentViewController = nil;
-    curController->priv->_presentingViewController = nil;
-    curController->priv->_popoverPresentationController = nil;
-
-    UIView* curView = [curController view];
+    UIView* curView = [presented view];
 
     UIView* myView = [self view];
-    [myView setHidden:FALSE];
+    [myView setHidden:NO];
 
-    if (realPopoverPresented) {
-        [[curController popoverPresentationController] _dismissAnimated:animated completion:completion];
-    } else if (animated) {
+    if (animated) {
         CGPoint curPos;
         id layer = [curView layer];
 
@@ -1281,12 +1329,12 @@ NSMutableDictionary* _pageMappings;
         [animation setRemovedOnCompletion:FALSE];
         [layer addAnimation:animation forKey:@"ModalDismiss"];
 
-        priv->_dismissCompletionBlock.attach([completion copy]);
+        priv->_dismissCompletionBlock.attach([cleanupCompletion copy]);
 
-        priv->_dismissController = curController;
-        [curController _notifyViewWillDisappear:TRUE];
+        priv->_dismissController = presented;
+        [presented _notifyViewWillDisappear:YES];
     } else {
-        [curController _notifyViewWillDisappear:animated];
+        [presented _notifyViewWillDisappear:animated];
         [curView removeFromSuperview];
 
         if ([[self view] superview] == nil) {
@@ -1294,14 +1342,12 @@ NSMutableDictionary* _pageMappings;
             [[[self view] superview] bringSubviewToFront:[self view]];
         }
 
-        [curController _notifyViewDidDisappear:FALSE];
+        [presented _notifyViewDidDisappear:NO];
         [self _notifyViewDidAppear:animated];
 
         TraceVerbose(TAG, L"Preparing completion");
 
-        if (completion) {
-            completion();
-        }
+        cleanupCompletion();
 
         TraceVerbose(TAG, L"Done completion");
     }
@@ -1330,116 +1376,95 @@ NSMutableDictionary* _pageMappings;
 }
 
 - (void)_addToTop:(NSNumber*)animatedValue {
+
+    if (![self parentViewController]) {
+        TraceError(TAG, L"Modal controller doesn't have a parent!");
+        [[UIApplication sharedApplication] endIgnoringInteractionEvents];
+        return;
+    }
+
     BOOL animated = [animatedValue intValue];
 
     priv->_isRootView = true;
 
-    BOOL displayPopover = NO;
+    float endY = 0;
 
-    if ([self parentViewController] != nil) {
-        if ([self modalPresentationStyle] == UIModalPresentationPopover) {
-            [[self popoverPresentationController] _prepareForPresentation];
+    UIView* view = [self view];
+    UIWindow* parentWindow = [[[self parentViewController] view] window];
 
-            displayPopover = ![self _hidesParent];
+    if (animated) {
+        g_presentingAnimated = YES;
+        [[UIApplication sharedApplication] beginIgnoringInteractionEvents];
+        [self _notifyViewWillAppear:YES];
+    } else if ([self _hidesParent]) {
+        [[[self parentViewController] view] setHidden:YES];
+    }
 
-            if (displayPopover) {
-                __unsafe_unretained __block UIViewController* me = self;
-
-                dispatch_block_t cleanup = ^{
-                    me->priv->_parentViewController->priv->_presentedViewController = nil;
-                    me->priv->_parentViewController->priv->_modalViewController = nil;
-                    me->priv->_popoverPresentationController = nil;
-                };
-
-                [[self popoverPresentationController] _presentAnimated:animated presentCompletion:priv->_presentCompletionBlock dismissCompletion:cleanup];
-                priv->_presentCompletionBlock = nil;
-            }
-        }
-
-        if (!displayPopover) {
-            float endY = 0;
-
-            UIView* view = [self view];
-            UIWindow* parentWindow = [[[self parentViewController] view] window];
-
-            if (animated) {
-                g_presentingAnimated = TRUE;
-                [[UIApplication sharedApplication] beginIgnoringInteractionEvents];
-                [self _notifyViewWillAppear:TRUE];
-            } else if ([self _hidesParent]) {
-                [[[self parentViewController] view] setHidden:TRUE];
-            }
-
-            if (parentWindow != nil) {
-                [parentWindow addSubview:view];
-            } else {
-                /*
-                    This is a workaround for VSO 5794762.
-                    Right now, every application has a popup window at level 100000. If we
-                    naively try to present into it, we'll bifurcate the application UI across
-                    two different stacked windows and break touch event handling.
-
-                    Mitigate that by avoiding the application's popup window when looking for the
-                    topmost window.
-                */
-                UIWindow* applicationPopupWindow = [[UIApplication sharedApplication] _popupWindow];
-                NSArray* windows = [[UIApplication sharedApplication] windows];
-                NSUInteger index = [windows count] - 1;
-                UIWindow* window = nil;
-                do {
-                    window = [windows objectAtIndex:index];
-                    index--;
-                } while (window == applicationPopupWindow);
-
-                [window addSubview:view];
-            }
-
-            if (animated) {
-                CGPoint curPos;
-                CALayer* layer = [view layer];
-
-                curPos = [layer position];
-
-                int orientation = findOrientation(self);
-                if (orientation == UIInterfaceOrientationPortrait) {
-                    curPos.y += GetCACompositor()->screenHeight();
-                } else if (orientation == UIInterfaceOrientationPortraitUpsideDown) {
-                    curPos.y -= GetCACompositor()->screenHeight();
-                } else if (orientation == UIInterfaceOrientationLandscapeLeft) {
-                    curPos.x += GetCACompositor()->screenWidth();
-                } else {
-                    curPos.x -= GetCACompositor()->screenWidth();
-                }
-
-                CABasicAnimation* animation = [CABasicAnimation animationWithKeyPath:@"position"];
-                [animation setFromValue:[NSValue valueWithCGPoint:curPos]];
-
-                if (orientation == UIInterfaceOrientationPortrait) {
-                    curPos.y -= GetCACompositor()->screenHeight();
-                } else if (orientation == UIInterfaceOrientationPortraitUpsideDown) {
-                    curPos.y += GetCACompositor()->screenHeight();
-                } else if (orientation == UIInterfaceOrientationLandscapeLeft) {
-                    curPos.x -= GetCACompositor()->screenWidth();
-                } else {
-                    curPos.x += GetCACompositor()->screenWidth();
-                }
-
-                [animation setToValue:[NSValue valueWithCGPoint:curPos]];
-                [animation setDuration:0.2f];
-                [animation setBeginTime:CACurrentMediaTime()];
-                [animation setTimingFunction:[CAMediaTimingFunction functionWithName:@"kCAMediaTimingFunctionEaseInEaseOut"]];
-                [animation setDelegate:[_TransitionNotifier _transitionTrampoline:self withSelector:@selector(_transitionStopped:)]];
-                [layer addAnimation:animation forKey:@"ModalPresent"];
-                g_presentingAnimated = FALSE;
-            }
-
-            if ([self _hidesParent]) {
-                [[self parentViewController] _notifyViewDidDisappear:animated];
-            }
-        }
-
+    if (parentWindow != nil) {
+        [parentWindow addSubview:view];
     } else {
-        TraceVerbose(TAG, L"Modal controller doesn't have a parent!");
+        /*
+            This is a workaround for VSO 5794762.
+            Right now, every application has a popup window at level 100000. If we
+            naively try to present into it, we'll bifurcate the application UI across
+            two different stacked windows and break touch event handling.
+
+            Mitigate that by avoiding the application's popup window when looking for the
+            topmost window.
+        */
+        UIWindow* applicationPopupWindow = [[UIApplication sharedApplication] _popupWindow];
+        NSArray* windows = [[UIApplication sharedApplication] windows];
+        NSUInteger index = [windows count] - 1;
+        UIWindow* window = nil;
+        do {
+            window = [windows objectAtIndex:index];
+            index--;
+        } while (window == applicationPopupWindow);
+
+        [window addSubview:view];
+    }
+
+    if (animated) {
+        CGPoint curPos;
+        CALayer* layer = [view layer];
+
+        curPos = [layer position];
+
+        int orientation = findOrientation(self);
+        if (orientation == UIInterfaceOrientationPortrait) {
+            curPos.y += GetCACompositor()->screenHeight();
+        } else if (orientation == UIInterfaceOrientationPortraitUpsideDown) {
+            curPos.y -= GetCACompositor()->screenHeight();
+        } else if (orientation == UIInterfaceOrientationLandscapeLeft) {
+            curPos.x += GetCACompositor()->screenWidth();
+        } else {
+            curPos.x -= GetCACompositor()->screenWidth();
+        }
+
+        CABasicAnimation* animation = [CABasicAnimation animationWithKeyPath:@"position"];
+        [animation setFromValue:[NSValue valueWithCGPoint:curPos]];
+
+        if (orientation == UIInterfaceOrientationPortrait) {
+            curPos.y -= GetCACompositor()->screenHeight();
+        } else if (orientation == UIInterfaceOrientationPortraitUpsideDown) {
+            curPos.y += GetCACompositor()->screenHeight();
+        } else if (orientation == UIInterfaceOrientationLandscapeLeft) {
+            curPos.x -= GetCACompositor()->screenWidth();
+        } else {
+            curPos.x += GetCACompositor()->screenWidth();
+        }
+
+        [animation setToValue:[NSValue valueWithCGPoint:curPos]];
+        [animation setDuration:0.2f];
+        [animation setBeginTime:CACurrentMediaTime()];
+        [animation setTimingFunction:[CAMediaTimingFunction functionWithName:@"kCAMediaTimingFunctionEaseInEaseOut"]];
+        [animation setDelegate:[_TransitionNotifier _transitionTrampoline:self withSelector:@selector(_transitionStopped:)]];
+        [layer addAnimation:animation forKey:@"ModalPresent"];
+        g_presentingAnimated = NO;
+    }
+
+    if ([self _hidesParent]) {
+        [[self parentViewController] _notifyViewDidDisappear:animated];
     }
 
     [[UIApplication sharedApplication] endIgnoringInteractionEvents];
@@ -1509,7 +1534,7 @@ static UIInterfaceOrientation findOrientation(UIViewController* self) {
                 priv->_visibility = controllerWillAppear;
             }
 
-            if (![[self popoverPresentationController] _isManagingPresentation]) {
+            if (![self popoverPresentationController]) {
                 [self viewWillAppear:isAnimated];
             }
         } break;
@@ -1537,7 +1562,9 @@ static UIInterfaceOrientation findOrientation(UIViewController* self) {
 
 - (void)_doNotifyViewDidAppear:(BOOL)isAnimated {
     priv->_visibility = controllerVisible;
-    if (![[self popoverPresentationController] _isManagingPresentation]) {
+    if (![self popoverPresentationController]) {
+        // UIPopoverPresentationController internally manages viewDidAppear et al appearance events (via WYPopoverController).
+
         [self viewDidAppear:isAnimated];
         if (priv->_presentCompletionBlock) {
             priv->_presentCompletionBlock();
@@ -1593,7 +1620,7 @@ static UIInterfaceOrientation findOrientation(UIViewController* self) {
             } else {
                 priv->_visibility = controllerWillDisappearAnimated;
             }
-            if (![[self popoverPresentationController] _isManagingPresentation]) {
+            if (![self popoverPresentationController]) {
                 [self viewWillDisappear:isAnimated];
             }
             break;
@@ -1618,7 +1645,7 @@ static UIInterfaceOrientation findOrientation(UIViewController* self) {
         case controllerWillDisappear:
             if (isAnimated == FALSE) {
                 priv->_visibility = controllerNotVisible;
-                if (![[self popoverPresentationController] _isManagingPresentation]) {
+                if (![self popoverPresentationController]) {
                     [self viewDidDisappear:isAnimated];
                 }
             } else {
@@ -1629,7 +1656,7 @@ static UIInterfaceOrientation findOrientation(UIViewController* self) {
         case controllerWillDisappearAnimated:
             if (isAnimated) {
                 priv->_visibility = controllerNotVisible;
-                if (![[self popoverPresentationController] _isManagingPresentation]) {
+                if (![self popoverPresentationController]) {
                     [self viewDidDisappear:isAnimated];
                 }
             }
@@ -1638,7 +1665,7 @@ static UIInterfaceOrientation findOrientation(UIViewController* self) {
         case controllerVisible:
             TraceWarning(TAG, L"Warning: Didn't notify view will disappear");
             priv->_visibility = controllerNotVisible;
-            if (![[self popoverPresentationController] _isManagingPresentation]) {
+            if (![self popoverPresentationController]) {
                 [self viewDidDisappear:isAnimated];
             }
             break;
@@ -2194,13 +2221,7 @@ static UIInterfaceOrientation findOrientation(UIViewController* self) {
  @Status Interoperable
 */
 - (UIViewController*)presentedViewController {
-    if (priv->_presentedViewController) {
-        return priv->_presentedViewController;
-    } else if ([priv->_parentViewController presentedViewController] != self) {
-        return [priv->_parentViewController presentedViewController];
-    }
-
-    return nil;
+    return priv->_presentedViewController;
 }
 
 /**
@@ -2223,10 +2244,9 @@ static UIInterfaceOrientation findOrientation(UIViewController* self) {
     priv->toolbarItems = nil;
     priv->editButtonItem = nil;
     priv->navigationController = nil;
-    if (priv->_modalViewController) {
-        ((UIViewController*)priv->_modalViewController)->priv->_parentViewController = nil;
+    if (priv->_presentedViewController) {
+        priv->_presentedViewController->priv->_parentViewController = nil;
     }
-    priv->_modalViewController = nil;
     priv->_parentViewController = nil;
     priv->nibName = nil;
     priv->nibBundle = nil;
