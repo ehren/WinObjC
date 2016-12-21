@@ -1269,7 +1269,9 @@ static void depthFirstNoAnimationDismiss(UIViewController *controller) {
             // Dismiss the remaining in youngest first order with no animation
             depthFirstNoAnimationDismiss(presented);
             // call the completion
-            completion();
+            if (completion) {
+                completion();
+            }
         }];
         return;
     }
