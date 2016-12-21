@@ -56,6 +56,7 @@ struct UIViewControllerPriv {
     UIModalPresentationStyle _presentationStyle;
     BOOL _hidesBottomBar;
     UIModalTransitionStyle _modalTransitionStyle;
+    StrongId<UIView> _modalOverlayView;
     BOOL _isRootView;
     idretainp<void (^)(void)> _dismissCompletionBlock;
     idretainp<void (^)(void)> _presentCompletionBlock;

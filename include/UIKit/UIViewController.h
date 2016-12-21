@@ -230,4 +230,7 @@ UIKIT_EXPORT_CLASS
 - (void)willMoveToParentViewController:(UIViewController*)parent;
 - (void)willRotateToInterfaceOrientation:(UIInterfaceOrientation)toInterfaceOrientation duration:(NSTimeInterval)duration;
 
+// WINOBJC extension
+- (UIView*)_modalOverlayView;
+
 @end

@@ -1276,6 +1276,11 @@ static void depthFirstNoAnimationDismiss(UIViewController *controller) {
         return;
     }
 
+    if (presented->priv->_modalOverlayView) {
+        [presented->priv->_modalOverlayView removeFromSuperview];
+        presented->priv->_modalOverlayView = nil;
+    }
+
     dispatch_block_t cleanupCompletion = ^{
         [self _childDismissCleanup];
 
@@ -1393,6 +1398,12 @@ static void depthFirstNoAnimationDismiss(UIViewController *controller) {
 
     UIView* view = [self view];
     UIWindow* parentWindow = [[[self parentViewController] view] window];
+
+    if ([self modalPresentationStyle] == UIModalPresentationFormSheet) {
+        priv->_modalOverlayView.attach([[UIView alloc] initWithFrame:parentWindow.bounds]);
+        [priv->_modalOverlayView setBackgroundColor:[UIColor colorWithHue:0 saturation:0 brightness:0 alpha:0.6]];
+        [parentWindow addSubview:priv->_modalOverlayView];
+    }
 
     if (animated) {
         g_presentingAnimated = YES;
@@ -2224,6 +2235,13 @@ static UIInterfaceOrientation findOrientation(UIViewController* self) {
 */
 - (UIViewController*)presentedViewController {
     return priv->_presentedViewController;
+}
+
+/**
+ @Status Extension
+*/
+- (UIView*)_modalOverlayView {
+    return priv->_modalOverlayView;
 }
 
 /**
