@@ -690,6 +690,10 @@ const float UIScrollViewDecelerationRateFast = StubConstant();
     _scrollViewer.verticalScrollBarVisibility = enable ? _previousVerticalScrollBarVisibility : WXCScrollBarVisibilityDisabled;
 }
 
+- (void)_setXamlScrollViewerEnabled:(BOOL)enable {
+    _scrollViewer.isEnabled = enable;
+}
+
 /**
  @Status Interoperable
 */
