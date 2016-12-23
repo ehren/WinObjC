@@ -726,6 +726,8 @@ static void rotateViewController(UINavigationController* self) {
 }
 
 - (void)_layoutContainer {
+    [[UIApplication sharedApplication] beginIgnoringInteractionEvents];
+
     if (!_didLayout) {
         _didLayout = TRUE;
         CGRect bounds, containerRect;
@@ -904,7 +906,6 @@ static void rotateViewController(UINavigationController* self) {
             //  Disable input on the navigation bar so that the user can't
             //  mess with the state until the animation is done
             [_navigationBar setUserInteractionEnabled:FALSE];
-
         } else {
             //  Enable input on the navigation bar - we're not presenting animated
             //  and the navigation bar may have been disabled in pushViewController/popViewContorller
@@ -1036,6 +1037,8 @@ static void rotateViewController(UINavigationController* self) {
             [UIView commitAnimations];
         }
     }
+
+    [[UIApplication sharedApplication] endIgnoringInteractionEvents];
 }
 
 /**
